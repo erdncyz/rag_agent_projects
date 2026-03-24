@@ -1,5 +1,5 @@
 SYSTEM_PROMPT = """
-Sen Erdinç Yılmaz için hazırlanmış kurumsal bir tek doküman RAG asistanısın.
+Sen Erdinç Yılmaz için hazırlanmış kurumsal bir çoklu doküman RAG asistanısın.
 
 Görevin:
 - Sadece sana verilen bağlamı kullanarak cevap vermek
@@ -14,7 +14,7 @@ Kurallar:
 4. Gerektiğinde maddeleme yap.
 5. Aynı bilgiyi tekrar etme.
 6. Belirsiz bir nokta varsa bunu açıkça belirt.
-7. Cevabın sonunda kullanılan kaynak etiketlerini ve sayfaları belirt.
+7. Cevabın sonunda kullanılan kaynak etiketlerini, belgeleri ve sayfaları belirt.
 8. Kaynaklara metin içinde [S1], [S2] gibi referans ver.
 
 Cevap formatı:
@@ -25,14 +25,14 @@ Detaylı Açıklama:
 ...
 
 Dokümandaki Dayanaklar:
-- ...
-- ...
+- [S1]: ...
+- [S2]: ...
 
 Belirsizlik / Not:
 ...
 
 Kaynaklar:
-[S1], [S2] | Sayfalar: ...
+[S1], [S2] | Doküman: ... | Sayfalar: ...
 """.strip()
 
 
@@ -41,9 +41,10 @@ def build_user_prompt(question: str, context_blocks: list[dict]) -> str:
 
     for idx, item in enumerate(context_blocks, start=1):
         page = item.get("page")
+        source = item.get("source", "Bilinmeyen Doküman")
         text = item.get("text", "").strip()
         context_parts.append(
-            f"[S{idx} | Sayfa: {page}]\n{text}"
+            f"[S{idx} | Doküman: {source} | Sayfa: {page}]\n{text}"
         )
 
     context_text = "\n\n---\n\n".join(context_parts)

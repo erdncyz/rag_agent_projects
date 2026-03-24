@@ -13,6 +13,7 @@ from app.schemas import (
     HealthResponse,
     IngestResponse,
     RetrieveResponse,
+    DocumentListResponse,
 )
 from app.logging_config import log_queue
 from app.services.file_validation import FileValidator
@@ -32,7 +33,7 @@ def home(request: Request):
         "index.html",
         {
             "request": request,
-            "title": "Erdinç YILMAZ - Tek Doküman RAG Asistanı",
+            "title": "Erdinç YILMAZ - Çoklu Doküman RAG Asistanı",
         },
     )
 
@@ -56,8 +57,8 @@ def health(
 @router.post("/reset")
 def reset_index(service: RagService = Depends(get_service)):
     try:
-        service.store.reset_collection()
-        return {"message": "İndeks başarıyla sıfırlandı."}
+        service.reset_all()
+        return {"message": "Tüm veritabanı başarıyla sıfırlandı."}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -83,12 +84,31 @@ def ingest_document(
 
     try:
         result = service.ingest_document(file_path=file_path)
-        return IngestResponse(
-            message="Doküman başarıyla işlendi ve indekslendi.",
-            filename=result["filename"],
-            total_chunks=result["total_chunks"],
-            pages=result["pages"],
+        return IngestResponse(**result)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/documents", response_model=DocumentListResponse)
+def list_documents(service: RagService = Depends(get_service)):
+    try:
+        docs = service.list_documents()
+        return DocumentListResponse(
+            total_documents=len(docs),
+            documents=docs
         )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.delete("/documents/{source_name}")
+def delete_document(
+    source_name: str,
+    service: RagService = Depends(get_service)
+):
+    try:
+        service.delete_document(source_name)
+        return {"message": f"{source_name} dokümanı silindi."}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -102,6 +122,7 @@ def retrieve_only(
         results = service.retrieve(
             question=payload.question,
             top_k=payload.top_k,
+            source_filter=payload.source_filter
         )
         return RetrieveResponse(
             question=payload.question,
@@ -121,6 +142,7 @@ def ask_question(
         result = service.answer(
             question=payload.question,
             top_k=payload.top_k,
+            source_filter=payload.source_filter
         )
         return AskResponse(**result)
     except Exception as exc:

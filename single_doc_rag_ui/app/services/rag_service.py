@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from app.config import Settings
 from app.prompts import SYSTEM_PROMPT, build_user_prompt
@@ -11,6 +11,7 @@ from app.services.chunker import TextChunker
 from app.services.document_loader import DocumentLoader
 from app.services.ollama_client import OllamaClient
 from app.services.vector_store import VectorStore
+from app.services.search_strategies import rerank_score, distance_to_similarity
 
 
 class RagService:
@@ -25,7 +26,7 @@ class RagService:
         self.store = VectorStore(settings)
         self.logger = logging.getLogger("rag_service")
 
-    def ingest_document(self, file_path: Path) -> dict:
+    def ingest_document(self, file_path: Path) -> dict[str, Any]:
         self.logger.info("Doküman ingest başladı: %s", file_path.name)
 
         pages = self.loader.load(file_path)
@@ -45,7 +46,6 @@ class RagService:
 
         self.logger.info("Embedding üretildi | dosya=%s", file_path.name)
 
-        self.store.reset_collection()
         self.store.add_chunks(
             ids=[chunk.chunk_id for chunk in chunks],
             documents=[chunk.text for chunk in chunks],
@@ -56,39 +56,82 @@ class RagService:
         self.logger.info("Doküman ingest tamamlandı: %s", file_path.name)
 
         return {
+            "message": "Doküman başarıyla yüklendi ve indekslendi.",
             "filename": file_path.name,
             "total_chunks": len(chunks),
             "pages": len(pages),
+            "source_name": source_name,
         }
 
-    def retrieve(self, question: str, top_k: Optional[int] = None) -> list[SourceChunk]:
-        top_k = top_k or self.settings.top_k
-        self.logger.info("Retrieve başladı | soru=%s | top_k=%s", question, top_k)
+    def retrieve(
+        self,
+        question: str,
+        top_k: Optional[int] = None,
+        source_filter: Optional[str] = None
+    ) -> list[SourceChunk]:
+        # Eğer rerank açıksa, vektör tabanından daha fazla (x3) aday çekiyoruz
+        fetch_k = (top_k or self.settings.top_k) * 3 if self.settings.rerank_enabled else (top_k or self.settings.top_k)
+        
+        self.logger.info(
+            "Retrieve başladı | soru=%s | base_top_k=%s | filter=%s | rerank=%s",
+            question, fetch_k, source_filter, self.settings.rerank_enabled
+        )
 
         query_embedding = self.ollama.embed([question])[0]
-        raw = self.store.query(query_embedding=query_embedding, top_k=top_k)
+        raw = self.store.query(
+            query_embedding=query_embedding,
+            top_k=fetch_k,
+            source_filter=source_filter
+        )
 
         ids = raw.get("ids", [[]])[0]
         documents = raw.get("documents", [[]])[0]
         metadatas = raw.get("metadatas", [[]])[0]
         distances = raw.get("distances", [[]])[0]
 
-        results: list[SourceChunk] = []
+        all_candidates: list[SourceChunk] = []
         for chunk_id, document, metadata, distance in zip(ids, documents, metadatas, distances):
             metadata = metadata or {}
-            results.append(
+            
+            # Eşik Değer Kontrolü (Max Acceptable Distance)
+            # Mesafe çok yüksekse (yani benzerlik çok azsa) o parçayı eliyoruz.
+            if distance is not None and distance > self.settings.max_acceptable_distance:
+                # Ancak kullanıcı min_context_results zorunluluğu koyduysa, boş dönmeyelim
+                if len(all_candidates) >= self.settings.min_context_results:
+                    continue
+
+            # Rerank Skoru Hesaplama
+            final_score = distance
+            if self.settings.rerank_enabled:
+                # rerank_score fonksiyonu mesafeyi benzerlik skoruna (0-1) çevirip lexical ile birleştirir.
+                final_score = rerank_score(question, document, distance)
+
+            all_candidates.append(
                 SourceChunk(
                     chunk_id=chunk_id,
-                    score=None if distance is None else float(distance),
+                    score=float(final_score) if final_score is not None else None,
                     page=metadata.get("page"),
                     text=document,
                     metadata=metadata,
                 )
             )
 
-        results = self._deduplicate_sources(results)
-        self.logger.info("Retrieve tamamlandı | sonuc_sayisi=%s", len(results))
-        return results
+        # Rerank Açıksa Yeniden Sıralama
+        if self.settings.rerank_enabled:
+            # Score ne kadar büyükse o kadar iyidir (benzerlik bazlı)
+            all_candidates.sort(key=lambda x: x.score or 0.0, reverse=True)
+        else:
+            # Score mesafedir (distance), ne kadar küçükse o kadar iyidir
+            all_candidates.sort(key=lambda x: x.score or 9.9)
+
+        # İstediğimiz sayıya (top_k) kısıtlama
+        final_results = all_candidates[:(top_k or self.settings.top_k)]
+
+        # Tekil Kayıt Kontrolü (Duplikasyonları önle)
+        final_results = self._deduplicate_sources(final_results)
+        
+        self.logger.info("Retrieve tamamlandı | sonuc_sayisi=%s", len(final_results))
+        return final_results
 
     def _deduplicate_sources(self, results: list[SourceChunk]) -> list[SourceChunk]:
         unique: list[SourceChunk] = []
@@ -96,7 +139,8 @@ class RagService:
 
         for item in results:
             text_key = item.text[:250].strip().lower()
-            key = (item.page, text_key)
+            source = item.metadata.get("source", "default")
+            key = (source, item.page, text_key)
 
             if key in seen_keys:
                 continue
@@ -107,49 +151,41 @@ class RagService:
         return unique
 
     def _select_context_chunks(self, retrieved: list[SourceChunk]) -> list[SourceChunk]:
-        selected: list[SourceChunk] = []
-        seen_pages = set()
+        return retrieved[:self.settings.max_context_chunks]
 
-        for item in retrieved:
-            if len(selected) >= self.settings.max_context_chunks:
-                break
+    def answer(
+        self,
+        question: str,
+        top_k: Optional[int] = None,
+        source_filter: Optional[str] = None
+    ) -> dict[str, Any]:
+        self.logger.info("Answer başladı | soru=%s | filter=%s", question, source_filter)
+        retrieved = self.retrieve(question=question, top_k=top_k, source_filter=source_filter)
 
-            if item.page not in seen_pages:
-                selected.append(item)
-                seen_pages.add(item.page)
-
-        if len(selected) < self.settings.max_context_chunks:
-            for item in retrieved:
-                if len(selected) >= self.settings.max_context_chunks:
-                    break
-                if item not in selected:
-                    selected.append(item)
-
-        return selected
-
-    def answer(self, question: str, top_k: Optional[int] = None) -> dict:
-        self.logger.info("Answer başladı | soru=%s", question)
-        retrieved = self.retrieve(question=question, top_k=top_k)
-
-        if not retrieved:
+        # Eğer güçlü bir bağlam (strong context) şartı varsa ve sonuçlar çok uzaksa (veya azsa) reddet
+        if self.settings.abstain_if_no_strong_context and not retrieved:
             return {
                 "answer": (
-                    "Kısa Cevap:\nİndekste uygun içerik bulunamadı.\n\n"
-                    "Detaylı Açıklama:\nÖnce bir doküman yükleyip indeks oluşturmanız gerekiyor.\n\n"
-                    "Dokümandaki Dayanaklar:\n- Uygun bağlam bulunamadı.\n\n"
-                    "Belirsizlik / Not:\n- Bu cevap herhangi bir doküman bağlamına dayanmıyor.\n\n"
+                    "Kısa Cevap:\nÜzgünüm, sorunuzla ilgili belgelerde yeterli ve güçlü bir kanıt/baglam bulamadım.\n\n"
+                    "Detaylı Açıklama:\n'Yetersiz Bağlam Şartı' aktif olduğu için uydurma cevap vermem engellenmiştir.\n\n"
                     "Kaynaklar:\nYok"
                 ),
                 "sources": [],
                 "prompt_context_length": 0,
                 "retrieved_pages": [],
                 "source_count": 0,
+                "retrieved_sources": [],
             }
 
         selected = self._select_context_chunks(retrieved)
 
         context_blocks = [
-            {"page": item.page, "text": item.text, "score": item.score}
+            {
+                "page": item.page,
+                "text": item.text,
+                "score": item.score,
+                "source": item.metadata.get("source", "-")
+            }
             for item in selected
         ]
 
@@ -157,6 +193,7 @@ class RagService:
         answer = self.ollama.chat(system_prompt=SYSTEM_PROMPT, user_prompt=user_prompt)
 
         retrieved_pages = sorted({item.page for item in selected if item.page is not None})
+        retrieved_sources = sorted({item.metadata.get("source") for item in selected if item.metadata.get("source")})
 
         self.logger.info("Answer tamamlandı | kaynak_sayisi=%s", len(selected))
 
@@ -166,4 +203,15 @@ class RagService:
             "prompt_context_length": len(user_prompt),
             "retrieved_pages": retrieved_pages,
             "source_count": len(selected),
+            "retrieved_sources": retrieved_sources,
         }
+
+    def list_documents(self) -> list[dict[str, Any]]:
+        return self.store.list_documents()
+
+    def delete_document(self, source_name: str) -> None:
+        self.logger.warning("Belge siliniyor: %s", source_name)
+        self.store.delete_by_source(source_name)
+
+    def reset_all(self) -> None:
+        self.store.reset_collection()

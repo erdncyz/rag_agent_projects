@@ -6,7 +6,11 @@ const askBtn = document.getElementById("askBtn");
 const retrieveBtn = document.getElementById("retrieveBtn");
 const resetBtn = document.getElementById("resetBtn");
 const copyLastAnswerBtn = document.getElementById("copyLastAnswerBtn");
+const refreshDocsBtn = document.getElementById("refreshDocsBtn");
+const deleteSelectedDocBtn = document.getElementById("deleteSelectedDocBtn");
 const topKInput = document.getElementById("topK");
+const sourceFilterSelect = document.getElementById("sourceFilterSelect");
+const documentListPanel = document.getElementById("documentListPanel");
 const chatMessages = document.getElementById("chatMessages");
 const sourcesPanel = document.getElementById("sourcesPanel");
 const metaPanel = document.getElementById("metaPanel");
@@ -15,6 +19,7 @@ const logsBox = document.getElementById("logsBox");
 let lastBotAnswer = "";
 
 function addMessage(text, role = "bot", meta = "") {
+  if (!chatMessages) return;
   const wrapper = document.createElement("div");
   wrapper.className = `message ${role}`;
 
@@ -39,14 +44,17 @@ function addMessage(text, role = "bot", meta = "") {
 }
 
 function setLoading(isLoading) {
-  uploadBtn.disabled = isLoading;
-  askBtn.disabled = isLoading;
-  retrieveBtn.disabled = isLoading;
-  resetBtn.disabled = isLoading;
-  copyLastAnswerBtn.disabled = isLoading;
+  if (uploadBtn) uploadBtn.disabled = isLoading;
+  if (askBtn) askBtn.disabled = isLoading;
+  if (retrieveBtn) retrieveBtn.disabled = isLoading;
+  if (resetBtn) resetBtn.disabled = isLoading;
+  if (copyLastAnswerBtn) copyLastAnswerBtn.disabled = isLoading;
+  if (refreshDocsBtn) refreshDocsBtn.disabled = isLoading;
+  if (deleteSelectedDocBtn) deleteSelectedDocBtn.disabled = isLoading;
 }
 
 function renderSources(sources) {
+  if (!sourcesPanel) return;
   sourcesPanel.innerHTML = "<h3>Kaynak Parçalar</h3>";
 
   if (!sources || sources.length === 0) {
@@ -55,206 +63,328 @@ function renderSources(sources) {
   }
 
   sources.forEach((src, idx) => {
-    const details = document.createElement("details");
-    details.className = "source-item";
-
-    const summary = document.createElement("summary");
-    summary.className = "source-summary";
-    summary.innerHTML = `
-      <div class="summary-title">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--accent)"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-        Kanıt Kartı ${idx + 1}
-      </div>
-      <svg class="summary-chevron" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
-    `;
-
-    const contentDiv = document.createElement("div");
-    contentDiv.className = "source-content";
+    const div = document.createElement("div");
+    div.className = "source-item";
 
     const meta = document.createElement("div");
     meta.className = "source-meta";
-    meta.textContent = `Kaynak ${idx + 1} | Sayfa: ${src.page ?? "-"} | Chunk ID: ${src.chunk_id}`;
+
+    const sourceName = src.metadata?.source || "-";
+    const scoreText = src.score !== null && src.score !== undefined
+      ? ` | Distance: ${Number(src.score).toFixed(4)}`
+      : "";
+
+    meta.textContent = `Kaynak ${idx + 1} | Belge: ${sourceName} | Sayfa: ${src.page ?? "-"}${scoreText} | Chunk ID: ${src.chunk_id}`;
+
+    const title = document.createElement("h4");
+    title.textContent = `Kanıt Kartı ${idx + 1}`;
 
     const pre = document.createElement("pre");
     pre.textContent = src.text;
 
-    contentDiv.appendChild(meta);
-    contentDiv.appendChild(pre);
+    div.appendChild(title);
+    div.appendChild(meta);
+    div.appendChild(pre);
 
-    details.appendChild(summary);
-    details.appendChild(contentDiv);
-
-    sourcesPanel.appendChild(details);
+    sourcesPanel.appendChild(div);
   });
 }
 
-function renderMetaPanel(sourceCount, retrievedPages, promptContextLength) {
+function renderMetaPanel(sourceCount, retrievedPages, promptContextLength, retrievedSources = []) {
+  if (!metaPanel) return;
   metaPanel.innerHTML = `
     <h3>Son Yanıt Özeti</h3>
     <p><strong>Kaynak Sayısı:</strong> ${sourceCount}</p>
-    <p><strong>Sayfalar:</strong> ${retrievedPages.length ? retrievedPages.join(", ") : "-"}</p>
+    <p><strong>Sayfalar:</strong> ${retrievedPages && retrievedPages.length ? retrievedPages.join(", ") : "-"}</p>
+    <p><strong>Belgeler:</strong> ${retrievedSources && retrievedSources.length ? retrievedSources.join(", ") : "-"}</p>
     <p><strong>Bağlam Uzunluğu:</strong> ${promptContextLength}</p>
   `;
 }
 
-uploadBtn.addEventListener("click", async () => {
-  const file = fileInput.files[0];
-  if (!file) {
-    uploadStatus.textContent = "Lütfen bir dosya seçin.";
+function getSourceFilterValue() {
+  if (!sourceFilterSelect) return null;
+  const value = sourceFilterSelect.value.trim();
+  return value ? value : null;
+}
+
+async function fetchDocuments() {
+  if (!documentListPanel) return;
+  try {
+    const response = await fetch("/documents");
+    const data = await response.json();
+
+    if (!response.ok) {
+      documentListPanel.innerHTML = "<p>Belge listesi alınamadı.</p>";
+      return;
+    }
+
+    renderDocumentList(data.documents);
+    populateSourceFilter(data.documents);
+  } catch (error) {
+    documentListPanel.innerHTML = "<p>Belge listesi alınırken hata oluştu.</p>";
+  }
+}
+
+function renderDocumentList(documents) {
+  if (!documentListPanel) return;
+  if (!documents || documents.length === 0) {
+    documentListPanel.innerHTML = "<p>Henüz indekslenmiş belge yok.</p>";
     return;
   }
 
-  const formData = new FormData();
-  formData.append("file", file);
+  documentListPanel.innerHTML = "";
 
-  try {
-    setLoading(true);
-    uploadStatus.textContent = "Doküman işleniyor...";
+  documents.forEach((doc) => {
+    const div = document.createElement("div");
+    div.className = "doc-list-item";
+    div.innerHTML = `
+      <h4>${doc.source_name}</h4>
+      <p>Chunk Sayısı: ${doc.chunk_count}</p>
+      <p>Sayfalar: ${doc.pages && doc.pages.length ? doc.pages.join(", ") : "-"}</p>
+    `;
+    documentListPanel.appendChild(div);
+  });
+}
 
-    const response = await fetch("/ingest", {
-      method: "POST",
-      body: formData,
-    });
+function populateSourceFilter(documents) {
+  if (!sourceFilterSelect) return;
+  const currentValue = sourceFilterSelect.value;
 
-    const data = await response.json();
+  sourceFilterSelect.innerHTML = `<option value="">Tüm Belgeler</option>`;
 
-    if (!response.ok) {
-      uploadStatus.textContent = data.detail || "Yükleme hatası";
+  documents.forEach((doc) => {
+    const option = document.createElement("option");
+    option.value = doc.source_name;
+    option.textContent = doc.source_name;
+    sourceFilterSelect.appendChild(option);
+  });
+
+  const values = ["", ...documents.map(doc => doc.source_name)];
+  if (values.includes(currentValue)) {
+    sourceFilterSelect.value = currentValue;
+  }
+}
+
+if (uploadBtn) {
+  uploadBtn.addEventListener("click", async () => {
+    const file = fileInput.files[0];
+    if (!file) {
+      uploadStatus.textContent = "Lütfen bir dosya seçin.";
       return;
     }
 
-    uploadStatus.textContent = `${data.filename} işlendi | Sayfa: ${data.pages} | Chunk: ${data.total_chunks}`;
-    addMessage(
-      `Doküman indekslendi: ${data.filename}`,
-      "bot",
-      `Toplam sayfa: ${data.pages} | Toplam chunk: ${data.total_chunks}`
-    );
-  } catch (error) {
-    uploadStatus.textContent = "Beklenmeyen bir hata oluştu.";
-  } finally {
-    setLoading(false);
-  }
-});
+    const formData = new FormData();
+    formData.append("file", file);
 
-askBtn.addEventListener("click", async () => {
-  const question = questionInput.value.trim();
-  const top_k = Number(topKInput.value || 6);
+    try {
+      setLoading(true);
+      uploadStatus.textContent = "Doküman işleniyor...";
 
-  if (!question) return;
+      const response = await fetch("/ingest", {
+        method: "POST",
+        body: formData,
+      });
 
-  addMessage(question, "user");
-  questionInput.value = "";
+      const data = await response.json();
 
-  try {
-    setLoading(true);
+      if (!response.ok) {
+        uploadStatus.textContent = data.detail || "Yükleme hatası";
+        return;
+      }
 
-    const response = await fetch("/ask", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, top_k }),
-    });
+      uploadStatus.textContent = `${data.filename} işlendi | Sayfa: ${data.pages} | Chunk: ${data.total_chunks}`;
+      addMessage(
+        `Doküman indekslendi: ${data.filename}`,
+        "bot",
+        `Kaynak adı: ${data.source_name} | Toplam sayfa: ${data.pages} | Toplam chunk: ${data.total_chunks}`
+      );
 
-    const data = await response.json();
+      await fetchDocuments();
+    } catch (error) {
+      uploadStatus.textContent = "Beklenmeyen bir hata oluştu.";
+    } finally {
+      setLoading(false);
+    }
+  });
+}
 
-    if (!response.ok) {
-      addMessage(data.detail || "Soru sorulurken hata oluştu.", "bot");
+if (askBtn) {
+  askBtn.addEventListener("click", async () => {
+    const question = questionInput.value.trim();
+    const top_k = Number(topKInput.value || 6);
+    const source_filter = getSourceFilterValue();
+
+    if (!question) return;
+
+    addMessage(question, "user");
+    questionInput.value = "";
+
+    try {
+      setLoading(true);
+
+      const response = await fetch("/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, top_k, source_filter }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        addMessage(data.detail || "Soru sorulurken hata oluştu.", "bot");
+        return;
+      }
+
+      lastBotAnswer = data.answer;
+
+      addMessage(
+        data.answer,
+        "bot",
+        `Kaynak sayısı: ${data.source_count} | Sayfalar: ${data.retrieved_pages ? data.retrieved_pages.join(", ") : "-"} | Belgeler: ${data.retrieved_sources ? data.retrieved_sources.join(", ") : "-"} | Bağlam uzunluğu: ${data.prompt_context_length}`
+      );
+
+      renderSources(data.sources);
+      renderMetaPanel(
+        data.source_count,
+        data.retrieved_pages,
+        data.prompt_context_length,
+        data.retrieved_sources
+      );
+    } catch (error) {
+      addMessage("İstek sırasında beklenmeyen bir hata oluştu.", "bot");
+    } finally {
+      setLoading(false);
+    }
+  });
+}
+
+if (retrieveBtn) {
+  retrieveBtn.addEventListener("click", async () => {
+    const question = questionInput.value.trim();
+    const top_k = Number(topKInput.value || 6);
+    const source_filter = getSourceFilterValue();
+
+    if (!question) return;
+
+    try {
+      setLoading(true);
+
+      const response = await fetch("/retrieve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, top_k, source_filter }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        addMessage(data.detail || "Retrieve sırasında hata oluştu.", "bot");
+        return;
+      }
+
+      addMessage(
+        "Retrieve tamamlandı. En alakalı kaynak parçalar aşağıda gösterildi.",
+        "bot",
+        `Toplam sonuç: ${data.total_results} | Filtre: ${source_filter || "Tüm Belgeler"}`
+      );
+
+      renderSources(data.results);
+    } catch (error) {
+      addMessage("Retrieve isteği sırasında beklenmeyen bir hata oluştu.", "bot");
+    } finally {
+      setLoading(false);
+    }
+  });
+}
+
+if (resetBtn) {
+  resetBtn.addEventListener("click", async () => {
+    try {
+      setLoading(true);
+
+      const response = await fetch("/reset", {
+        method: "POST",
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        addMessage(data.detail || "Reset işlemi başarısız oldu.", "bot");
+        return;
+      }
+
+      lastBotAnswer = "";
+      addMessage("Tüm indeks sıfırlandı. Yeni belgeler yükleyebilirsiniz.", "bot");
+      if (uploadStatus) uploadStatus.textContent = "İndeks temizlendi.";
+      renderSources([]);
+      renderMetaPanel(0, [], 0, []);
+      await fetchDocuments();
+    } catch (error) {
+      addMessage("Reset işlemi sırasında beklenmeyen bir hata oluştu.", "bot");
+    } finally {
+      setLoading(false);
+    }
+  });
+}
+
+if (copyLastAnswerBtn) {
+  copyLastAnswerBtn.addEventListener("click", async () => {
+    if (!lastBotAnswer) {
+      addMessage("Kopyalanacak bir bot cevabı bulunmuyor.", "bot");
       return;
     }
 
-    lastBotAnswer = data.answer;
+    try {
+      await navigator.clipboard.writeText(lastBotAnswer);
+      addMessage("Son bot cevabı panoya kopyalandı.", "bot");
+    } catch (error) {
+      addMessage("Kopyalama sırasında bir hata oluştu.", "bot");
+    }
+  });
+}
 
-    addMessage(
-      data.answer,
-      "bot",
-      `Kaynak sayısı: ${data.source_count} | Sayfalar: ${data.retrieved_pages.join(", ")} | Bağlam uzunluğu: ${data.prompt_context_length}`
-    );
+if (refreshDocsBtn) {
+  refreshDocsBtn.addEventListener("click", async () => {
+    await fetchDocuments();
+    addMessage("Belge listesi yenilendi.", "bot");
+  });
+}
 
-    renderSources(data.sources);
-    renderMetaPanel(data.source_count, data.retrieved_pages, data.prompt_context_length);
-  } catch (error) {
-    addMessage("İstek sırasında beklenmeyen bir hata oluştu.", "bot");
-  } finally {
-    setLoading(false);
-  }
-});
+if (deleteSelectedDocBtn) {
+  deleteSelectedDocBtn.addEventListener("click", async () => {
+    const sourceName = getSourceFilterValue();
 
-retrieveBtn.addEventListener("click", async () => {
-  const question = questionInput.value.trim();
-  const top_k = Number(topKInput.value || 6);
-
-  if (!question) return;
-
-  try {
-    setLoading(true);
-
-    const response = await fetch("/retrieve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, top_k }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      addMessage(data.detail || "Retrieve sırasında hata oluştu.", "bot");
+    if (!sourceName) {
+      addMessage("Silmek için önce bir belge seçmelisiniz.", "bot");
       return;
     }
 
-    addMessage(
-      "Retrieve tamamlandı. En alakalı kaynak parçalar aşağıda gösterildi.",
-      "bot",
-      `Toplam sonuç: ${data.total_results}`
-    );
+    try {
+      setLoading(true);
 
-    renderSources(data.results);
-  } catch (error) {
-    addMessage("Retrieve isteği sırasında beklenmeyen bir hata oluştu.", "bot");
-  } finally {
-    setLoading(false);
-  }
-});
+      const response = await fetch(`/documents/${encodeURIComponent(sourceName)}`, {
+        method: "DELETE",
+      });
 
-resetBtn.addEventListener("click", async () => {
-  try {
-    setLoading(true);
+      const data = await response.json();
 
-    const response = await fetch("/reset", {
-      method: "POST",
-    });
+      if (!response.ok) {
+        addMessage(data.detail || "Belge silinirken hata oluştu.", "bot");
+        return;
+      }
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      addMessage(data.detail || "Reset işlemi başarısız oldu.", "bot");
-      return;
+      addMessage(`${sourceName} kaynağı silindi.`, "bot");
+      sourceFilterSelect.value = "";
+      await fetchDocuments();
+    } catch (error) {
+      addMessage("Belge silme sırasında beklenmeyen bir hata oluştu.", "bot");
+    } finally {
+      setLoading(false);
     }
+  });
+}
 
-    lastBotAnswer = "";
-    addMessage("İndeks sıfırlandı. Yeni bir doküman yükleyebilirsiniz.", "bot");
-    uploadStatus.textContent = "İndeks temizlendi.";
-    renderSources([]);
-    renderMetaPanel(0, [], 0);
-  } catch (error) {
-    addMessage("Reset işlemi sırasında beklenmeyen bir hata oluştu.", "bot");
-  } finally {
-    setLoading(false);
-  }
-});
-
-copyLastAnswerBtn.addEventListener("click", async () => {
-  if (!lastBotAnswer) {
-    addMessage("Kopyalanacak bir bot cevabı bulunmuyor.", "bot");
-    return;
-  }
-
-  try {
-    await navigator.clipboard.writeText(lastBotAnswer);
-    addMessage("Son bot cevabı panoya kopyalandı.", "bot");
-  } catch (error) {
-    addMessage("Kopyalama sırasında bir hata oluştu.", "bot");
-  }
-});
-
+// Log fetching
 async function fetchLogs() {
   if (!logsBox) return;
   try {
@@ -289,3 +419,5 @@ if (logsBox) {
   setInterval(fetchLogs, 1000);
   fetchLogs();
 }
+
+fetchDocuments();

@@ -7,7 +7,11 @@ from pydantic import BaseModel, Field
 
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=3)
-    top_k: Optional[int] = Field(default=None, ge=1, le=10)
+    top_k: Optional[int] = Field(default=None, ge=1, le=20)
+    source_filter: Optional[str] = Field(
+        default=None,
+        description="Yalnızca belirli bir belge kaynağında arama yap"
+    )
 
 
 class SourceChunk(BaseModel):
@@ -24,6 +28,7 @@ class AskResponse(BaseModel):
     prompt_context_length: int
     retrieved_pages: list[int]
     source_count: int
+    retrieved_sources: list[str]
 
 
 class IngestResponse(BaseModel):
@@ -31,6 +36,7 @@ class IngestResponse(BaseModel):
     filename: str
     total_chunks: int
     pages: int
+    source_name: str
 
 
 class RetrieveResponse(BaseModel):
@@ -47,3 +53,14 @@ class HealthResponse(BaseModel):
     chat_model: str
     embedding_model: str
     app_env: str
+
+
+class DocumentSummary(BaseModel):
+    source_name: str
+    chunk_count: int
+    pages: list[int]
+
+
+class DocumentListResponse(BaseModel):
+    total_documents: int
+    documents: list[DocumentSummary]
