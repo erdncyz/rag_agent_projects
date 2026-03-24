@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -35,6 +36,7 @@ class IngestResponse(BaseModel):
 class RetrieveResponse(BaseModel):
     question: str
     results: list[SourceChunk]
+    total_results: int
 
 
 class HealthResponse(BaseModel):
@@ -44,3 +46,4 @@ class HealthResponse(BaseModel):
     ollama_base_url: str
     chat_model: str
     embedding_model: str
+    app_env: str

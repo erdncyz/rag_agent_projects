@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 import chromadb
 from chromadb.api.models.Collection import Collection
 
 from app.config import Settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class VectorStore:
@@ -17,9 +21,10 @@ class VectorStore:
 
     def reset_collection(self) -> None:
         try:
+            logger.info(f"{self.settings.chroma_collection} koleksiyonu sıfırlanıyor.")
             self.client.delete_collection(name=self.settings.chroma_collection)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"Koleksiyon silinemedi (önceden olmayabilir): {exc}")
         self.client.get_or_create_collection(name=self.settings.chroma_collection)
 
     def add_chunks(
@@ -30,6 +35,7 @@ class VectorStore:
         metadatas: list[dict[str, Any]],
     ) -> None:
         collection = self.get_collection()
+        logger.info(f"{len(ids)} adet doküman ChromaDB'ye ekleniyor.")
         collection.add(
             ids=ids,
             documents=documents,

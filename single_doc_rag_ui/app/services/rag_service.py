@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -21,8 +23,11 @@ class RagService:
         )
         self.ollama = OllamaClient(settings)
         self.store = VectorStore(settings)
+        self.logger = logging.getLogger("rag_service")
 
     def ingest_document(self, file_path: Path) -> dict:
+        self.logger.info("Doküman ingest başladı: %s", file_path.name)
+
         pages = self.loader.load(file_path)
         source_name = file_path.stem.replace(" ", "_").lower()
         chunks = self.chunker.split_pages(pages, source_name=source_name)
@@ -30,7 +35,15 @@ class RagService:
         if not chunks:
             raise ValueError("Belgeden chunk üretilemedi.")
 
+        self.logger.info(
+            "Chunk üretildi | dosya=%s | chunk_sayisi=%s",
+            file_path.name,
+            len(chunks),
+        )
+
         embeddings = self.ollama.embed([chunk.text for chunk in chunks])
+
+        self.logger.info("Embedding üretildi | dosya=%s", file_path.name)
 
         self.store.reset_collection()
         self.store.add_chunks(
@@ -40,6 +53,8 @@ class RagService:
             metadatas=[chunk.metadata for chunk in chunks],
         )
 
+        self.logger.info("Doküman ingest tamamlandı: %s", file_path.name)
+
         return {
             "filename": file_path.name,
             "total_chunks": len(chunks),
@@ -48,6 +63,8 @@ class RagService:
 
     def retrieve(self, question: str, top_k: Optional[int] = None) -> list[SourceChunk]:
         top_k = top_k or self.settings.top_k
+        self.logger.info("Retrieve başladı | soru=%s | top_k=%s", question, top_k)
+
         query_embedding = self.ollama.embed([question])[0]
         raw = self.store.query(query_embedding=query_embedding, top_k=top_k)
 
@@ -69,7 +86,9 @@ class RagService:
                 )
             )
 
-        return self._deduplicate_sources(results)
+        results = self._deduplicate_sources(results)
+        self.logger.info("Retrieve tamamlandı | sonuc_sayisi=%s", len(results))
+        return results
 
     def _deduplicate_sources(self, results: list[SourceChunk]) -> list[SourceChunk]:
         unique: list[SourceChunk] = []
@@ -109,11 +128,18 @@ class RagService:
         return selected
 
     def answer(self, question: str, top_k: Optional[int] = None) -> dict:
+        self.logger.info("Answer başladı | soru=%s", question)
         retrieved = self.retrieve(question=question, top_k=top_k)
 
         if not retrieved:
             return {
-                "answer": "Kısa Cevap:\nİndekste uygun içerik bulunamadı.\n\nDetaylı Açıklama:\nÖnce bir doküman yükleyip indeks oluşturmanız gerekiyor.\n\nDokümandaki Dayanaklar:\n- Uygun bağlam bulunamadı.\n\nBelirsizlik / Not:\n- Bu cevap herhangi bir doküman bağlamına dayanmıyor.\n\nKaynaklar:\nYok",
+                "answer": (
+                    "Kısa Cevap:\nİndekste uygun içerik bulunamadı.\n\n"
+                    "Detaylı Açıklama:\nÖnce bir doküman yükleyip indeks oluşturmanız gerekiyor.\n\n"
+                    "Dokümandaki Dayanaklar:\n- Uygun bağlam bulunamadı.\n\n"
+                    "Belirsizlik / Not:\n- Bu cevap herhangi bir doküman bağlamına dayanmıyor.\n\n"
+                    "Kaynaklar:\nYok"
+                ),
                 "sources": [],
                 "prompt_context_length": 0,
                 "retrieved_pages": [],
@@ -131,6 +157,8 @@ class RagService:
         answer = self.ollama.chat(system_prompt=SYSTEM_PROMPT, user_prompt=user_prompt)
 
         retrieved_pages = sorted({item.page for item in selected if item.page is not None})
+
+        self.logger.info("Answer tamamlandı | kaynak_sayisi=%s", len(selected))
 
         return {
             "answer": answer,

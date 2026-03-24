@@ -1,6 +1,10 @@
+import logging
 from pathlib import Path
 
 from pypdf import PdfReader
+
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentLoader:
@@ -10,6 +14,7 @@ class DocumentLoader:
         suffix = file_path.suffix.lower()
 
         if suffix not in self.SUPPORTED_EXTENSIONS:
+            logger.error(f"Desteklenmeyen dosya türü denendi: {suffix}")
             raise ValueError(f"Desteklenmeyen dosya türü: {suffix}")
 
         if suffix == ".pdf":
@@ -32,6 +37,7 @@ class DocumentLoader:
                 })
 
         if not pages:
+            logger.warning("PDF'den metin çıkarılamadı (scanned PDF olabilir).")
             raise ValueError("PDF içerisinden metin çıkarılamadı. Belge taranmış olabilir.")
 
         return pages

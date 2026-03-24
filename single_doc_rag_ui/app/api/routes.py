@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
@@ -13,6 +14,8 @@ from app.schemas import (
     IngestResponse,
     RetrieveResponse,
 )
+from app.logging_config import log_queue
+from app.services.file_validation import FileValidator
 from app.services.rag_service import RagService
 
 router = APIRouter()
@@ -29,7 +32,7 @@ def home(request: Request):
         "index.html",
         {
             "request": request,
-            "title": "Erdinç Yılmaz - Tek Doküman RAG Asistanı",
+            "title": "Erdinç YILMAZ - Tek Doküman RAG Asistanı",
         },
     )
 
@@ -46,7 +49,17 @@ def health(
         ollama_base_url=settings.ollama_base_url,
         chat_model=settings.ollama_chat_model,
         embedding_model=settings.ollama_embed_model,
+        app_env=settings.app_env,
     )
+
+
+@router.post("/reset")
+def reset_index(service: RagService = Depends(get_service)):
+    try:
+        service.store.reset_collection()
+        return {"message": "İndeks başarıyla sıfırlandı."}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/ingest", response_model=IngestResponse)
@@ -54,18 +67,19 @@ def ingest_document(
     file: UploadFile = File(...),
     service: RagService = Depends(get_service),
 ):
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in {".pdf", ".txt", ".md"}:
-        raise HTTPException(
-            status_code=400,
-            detail="Yalnızca PDF, TXT ve MD yükleyebilirsiniz.",
-        )
+    try:
+        FileValidator.validate_filename(file.filename)
+        FileValidator.validate_extension(file.filename or "")
+        file_bytes = file.file.read()
+        FileValidator.validate_size(file_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     upload_dir = Path("data/uploads")
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    file_path = upload_dir / file.filename
-    file_path.write_bytes(file.file.read())
+    file_path = upload_dir / (file.filename or "uploaded_file")
+    file_path.write_bytes(file_bytes)
 
     try:
         result = service.ingest_document(file_path=file_path)
@@ -92,6 +106,7 @@ def retrieve_only(
         return RetrieveResponse(
             question=payload.question,
             results=results,
+            total_results=len(results),
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -110,3 +125,8 @@ def ask_question(
         return AskResponse(**result)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/logs")
+def get_logs():
+    return {"logs": list(log_queue)}

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 from typing import Sequence
 import httpx
 
 from app.config import Settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaClient:
@@ -36,6 +40,7 @@ class OllamaClient:
 
         for endpoint in endpoints:
             try:
+                logger.debug(f"Embedding alınıyor: {endpoint}")
                 response = httpx.post(endpoint, json=payload, timeout=self.timeout)
                 response.raise_for_status()
                 data = response.json()
@@ -47,11 +52,14 @@ class OllamaClient:
                     return [data["embedding"]]
 
             except Exception as exc:
+                logger.warning(f"Ollama embedding çağrısı başarısız ({endpoint}): {exc}")
                 last_error = exc
 
+        logger.error("Tüm embedding denemeleri başarısız oldu.")
         raise RuntimeError(f"Ollama embedding endpoint çağrısı başarısız oldu: {last_error}")
 
     def chat(self, system_prompt: str, user_prompt: str) -> str:
+        logger.info(f"Ollama chat başlatılıyor... Model: {self.settings.ollama_chat_model}")
         response = httpx.post(
             f"{self.base_url}/chat",
             json={
