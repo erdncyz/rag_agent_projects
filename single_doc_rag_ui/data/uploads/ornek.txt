@@ -1,0 +1,3 @@
+Bu bir örnek dokümandır.
+
+RAG sistemi belge temelli çalışır.
