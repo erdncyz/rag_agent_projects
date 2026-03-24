@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     chroma_path: str = "./data/chroma"
     chroma_collection: str = "single_doc_rag"
 
+    admin_api_key: str = "secret-key"
+
     top_k: int = 6
     chunk_size: int = 1100
     chunk_overlap: int = 180

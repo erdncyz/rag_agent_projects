@@ -18,6 +18,7 @@ from app.schemas import (
 from app.logging_config import log_queue
 from app.services.file_validation import FileValidator
 from app.services.rag_service import RagService
+from app.security import require_admin_key
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -152,3 +153,34 @@ def ask_question(
 @router.get("/logs")
 def get_logs():
     return {"logs": list(log_queue)}
+
+
+@router.post("/debug/retrieve-preview")
+def retrieve_preview(
+    payload: AskRequest,
+    service: RagService = Depends(get_service),
+):
+    try:
+        results = service.retrieve(
+            question=payload.question,
+            top_k=payload.top_k,
+            source_filter=payload.source_filter,
+        )
+        return {
+            "question": payload.question,
+            "source_filter": payload.source_filter,
+            "top_k": payload.top_k,
+            "result_count": len(results),
+            "preview": [
+                {
+                    "chunk_id": item.chunk_id,
+                    "source": item.metadata.get("source"),
+                    "page": item.page,
+                    "distance": item.score,
+                    "preview_text": item.text[:300],
+                }
+                for item in results
+            ],
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

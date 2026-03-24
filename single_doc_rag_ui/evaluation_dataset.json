@@ -1,0 +1,14 @@
+[
+  {
+    "question": "Oryantasyon süreci hakkında ne söyleniyor?",
+    "source_filter": "hr_policy",
+    "expected_source": "hr_policy",
+    "must_contain": ["oryantasyon", "ilk hafta"]
+  },
+  {
+    "question": "Parola politikası hakkında ne söyleniyor?",
+    "source_filter": "security_guide",
+    "expected_source": "security_guide",
+    "must_contain": ["parola", "güncellenmelidir"]
+  }
+]
