@@ -1,17 +1,18 @@
-from typing import Any
+from __future__ import annotations
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
 
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=3)
-    top_k: int | None = Field(default=None, ge=1, le=10)
+    top_k: Optional[int] = Field(default=None, ge=1, le=10)
 
 
 class SourceChunk(BaseModel):
     chunk_id: str
-    score: float | None = None
-    page: int | None = None
+    score: Optional[float] = None
+    page: Optional[int] = None
     text: str
     metadata: dict[str, Any] = Field(default_factory=dict)
 

@@ -1,0 +1,4 @@
+data/uploads/
+data/chroma/
+__pycache__/
+*.pyc

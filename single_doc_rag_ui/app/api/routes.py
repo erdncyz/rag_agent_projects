@@ -1,13 +1,112 @@
-from fastapi import APIRouter
+from __future__ import annotations
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+
+from app.config import Settings, get_settings
+from app.schemas import (
+    AskRequest,
+    AskResponse,
+    HealthResponse,
+    IngestResponse,
+    RetrieveResponse,
+)
+from app.services.rag_service import RagService
 
 router = APIRouter()
+templates = Jinja2Templates(directory="app/templates")
 
 
-@router.get("/")
-def root():
-    return {"message": "Single Document RAG UI çalışıyor"}
+def get_service(settings: Settings = Depends(get_settings)) -> RagService:
+    return RagService(settings)
 
 
-@router.get("/health")
-def health():
-    return {"status": "ok"}
+@router.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "title": "Erdinç Yılmaz - Tek Doküman RAG Asistanı",
+        },
+    )
+
+
+@router.get("/health", response_model=HealthResponse)
+def health(
+    settings: Settings = Depends(get_settings),
+    service: RagService = Depends(get_service),
+):
+    return HealthResponse(
+        status="ok" if service.ollama.healthcheck() else "degraded",
+        collection_name=settings.chroma_collection,
+        indexed_records=service.store.count(),
+        ollama_base_url=settings.ollama_base_url,
+        chat_model=settings.ollama_chat_model,
+        embedding_model=settings.ollama_embed_model,
+    )
+
+
+@router.post("/ingest", response_model=IngestResponse)
+def ingest_document(
+    file: UploadFile = File(...),
+    service: RagService = Depends(get_service),
+):
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".pdf", ".txt", ".md"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Yalnızca PDF, TXT ve MD yükleyebilirsiniz.",
+        )
+
+    upload_dir = Path("data/uploads")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    file_path = upload_dir / file.filename
+    file_path.write_bytes(file.file.read())
+
+    try:
+        result = service.ingest_document(file_path=file_path)
+        return IngestResponse(
+            message="Doküman başarıyla işlendi ve indekslendi.",
+            filename=result["filename"],
+            total_chunks=result["total_chunks"],
+            pages=result["pages"],
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/retrieve", response_model=RetrieveResponse)
+def retrieve_only(
+    payload: AskRequest,
+    service: RagService = Depends(get_service),
+):
+    try:
+        results = service.retrieve(
+            question=payload.question,
+            top_k=payload.top_k,
+        )
+        return RetrieveResponse(
+            question=payload.question,
+            results=results,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/ask", response_model=AskResponse)
+def ask_question(
+    payload: AskRequest,
+    service: RagService = Depends(get_service),
+):
+    try:
+        result = service.answer(
+            question=payload.question,
+            top_k=payload.top_k,
+        )
+        return AskResponse(**result)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

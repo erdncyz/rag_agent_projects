@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
+from typing import Optional
 
 from app.config import Settings
 from app.prompts import SYSTEM_PROMPT, build_user_prompt
@@ -45,7 +46,7 @@ class RagService:
             "pages": len(pages),
         }
 
-    def retrieve(self, question: str, top_k: int | None = None) -> list[SourceChunk]:
+    def retrieve(self, question: str, top_k: Optional[int] = None) -> list[SourceChunk]:
         top_k = top_k or self.settings.top_k
         query_embedding = self.ollama.embed([question])[0]
         raw = self.store.query(query_embedding=query_embedding, top_k=top_k)
@@ -107,7 +108,7 @@ class RagService:
 
         return selected
 
-    def answer(self, question: str, top_k: int | None = None) -> dict:
+    def answer(self, question: str, top_k: Optional[int] = None) -> dict:
         retrieved = self.retrieve(question=question, top_k=top_k)
 
         if not retrieved:
